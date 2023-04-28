@@ -1,0 +1,146 @@
+# Load packages
+libs <- c('ggplot2','readxl','dplyr','tidyverse','lubridate','googleAnalyticsR','gganimate','transformr','gifski')
+lapply(libs,require,character.only=T)
+
+# Specify wd
+setwd("D:/xxxx")
+      
+# Google Analytics   
+ga_auth()
+ga_auth(email="xxxx@gmail.com")
+1 # there will be a prompt to the google analytics webbpage after this command where one should click to allow access
+
+# Get account list
+(account_list <- ga_account_list())
+
+# Account_list will have a column called "viewId"
+(account_list$viewId)
+
+# List of parameters one can extract
+meta # more on parameters here: https://ga-dev-tools.google/dimensions-metrics-explorer
+  
+# Retrieve ga:sessions data (the total number of sessions)
+(data_sess <- google_analytics(viewId="120358752",date_range=c("2016-01-01","2023-04-28"),metrics="ga:sessions",dimensions="ga:date",anti_sample=TRUE))
+
+# Retrieve ga:newUsers data (the number of sessions marked as a user's first sessions)
+(data_use <- google_analytics(viewId="120358752",date_range=c("2016-01-01","2023-04-28"),metrics="ga:newUsers",dimensions="ga:date",anti_sample=TRUE))
+
+# Since the data is over the same period, we can just bind columns
+data <- cbind(data_sess,data_use$newUsers)
+colnames(data)<-c("Date","sessions","newUsers")
+
+# Keep only complete cases
+(data <- data[complete.cases(data[, c("Date","sessions","newUsers")]), ])
+
+# Extract date
+data$month <- ((as.numeric(format(as.Date(data$"Date",format="%Y%m%d"),"%m"))) %% 13) # for making an animated graph
+data$year <- format(as.Date(data$"Date",format="%Y%m%d"),"%Y") # for group variable
+data$month_label <- format(as.Date(data$"Date",format="%Y%m%d"),"%B") # for animated title
+
+# Aggregate data
+data <- aggregate(list(data$sessions,data$newUsers),by=list(data$month,data$year,data$month_label),sum)
+
+# Format
+colnames(data) <- c("month",'year,"month_label","sessions","newUsers")
+data[,5:7] <- lapply(data[,5:7],as.numeric)
+data <- data[order(data$year,data_agr$month,data_agr$month_label),]
+
+# Workaround for transition_reveal (all credit to this post: https://stackoverflow.com/questions/64069501/arrow-pointing-wrong-direction-using-gganimate/64135523#64135523 and https://github.com/thomasp85/gganimate/issues/480)
+TransitionReveal2 <- ggproto("TransitionReveal2",TransitionReveal,expand_panel=function (self,data,type,id,match,ease,enter,exit,params,layer_index) {    
+    row_vars <- self$get_row_vars(data)
+    if (is.null(row_vars)) 
+      return(data)
+    data$group <- paste0(row_vars$before,row_vars$after)
+    time <- as.numeric(row_vars$along)
+    all_frames <- switch(type,
+                         point=tweenr:::tween_along(data,ease,params$nframes, 
+                                                      !!time,group,c(1,params$nframes),
+                                                      FALSE,params$keep_last),
+                         path=tweenr:::tween_along(data,ease,params$nframes, 
+                                                     !!time,group,c(1,params$nframes),
+                                                     TRUE,params$keep_last),
+                         polygon=tweenr:::tween_along(data,ease,params$nframes, 
+                                                        !!time,group,c(1,params$nframes),
+                                                        TRUE,params$keep_last),
+                         stop(type," layers not currently supported by transition_reveal", 
+                              call.=FALSE))
+    all_frames$group <- paste0(all_frames$group,"<",all_frames$.frame,">")
+    all_frames$.frame <- NULL
+    # added step to filter out transition rows with duplicated positions
+    all_frames <- all_frames %>%
+      filter(!(.phase=="transition" &
+                 abs(x-lag(x)) <= sqrt(.Machine$double.eps) &
+                 abs(y-lag(y)) <= sqrt(.Machine$double.eps)))
+    all_frames
+  })
+transition_reveal2 <- function(along,range=NULL,keep_last=TRUE) {
+  along_quo <- enquo(along)
+  gganimate:::require_quo(along_quo,"along")
+  ggproto(NULL,TransitionReveal2, # instead of TransitionReveal
+          params=list(along_quo=along_quo,range=range,keep_last=keep_last))
+}
+
+# Plot sessions
+(p_sess <- ggplot(data,aes(x=month,y=sessions,group=year,color=year))+
+    geom_line(linewidth=1)+
+    geom_point(aes(group=seq_along(month)))+
+    scale_color_manual(values=c("#959a4b","#32586d","#b46232","#89acaa","#303d4d","#e0ce5e","#623a38","#ccd872"))+
+    transition_reveal2(month)+
+    ease_aes("linear") +
+    labs(title="Number of sessions per month: {data$month_label[which.min(abs(data$month-frame_along))]}")+ # solution from here: https://stackoverflow.com/questions/62358220/using-alternative-variables-in-title-expression-in-gganimates-transition-reveal
+    labs(x="Month",y="")+
+    scale_y_continuous(breaks=seq(0,1600,400),limits=c(0,1600),labels=c("0","400","800","1 200","1 600"))+
+    scale_x_continuous(breaks=c(1:12),labels=c("jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"))+
+    theme(plot.title=element_text(size=12,family="Verdana"),
+          panel.background=element_blank(),
+          panel.border=element_blank(),
+          panel.grid.major=element_blank(),
+          panel.grid.minor=element_blank(),
+          legend.key.size=unit(0.4,"cm"),
+          legend.key=element_blank(),
+          legend.text=element_text(size=8,family="Verdana"),
+          legend.background=element_blank(),
+          legend.position="bottom",
+          axis.line=element_line(colour='black',linewidth=0.4),
+          axis.ticks.y=element_line(linewidth=0.2,colour="black"),
+          axis.ticks.x=element_line(linewidth=0.2,colour="black"),
+          axis.text.x=element_text(colour="black",size=9,family="Verdana"),
+          axis.title.x=element_text(colour="black",size=10,family="Verdana"),
+          axis.text.y=element_text(colour="black",size=9,family="Verdana"),
+          axis.title.y=element_text(colour="black",size=10,family="Verdana")))
+
+# Create animation and save as gif
+(animation_sess <- animate(p_sess,nframes=50,fps=3,width=16,height=12,units="cm",res=300,renderer=gifski_renderer(loop=F),type="cairo",end_pause=20))
+anim_save("D:/xxxx/Number of sessions.gif",animation_sess)
+
+# Plot newUsers
+(p_use <- ggplot(data,aes(x=month,y=newUsers,group=year,color=year))+
+    geom_line(linewidth=1)+
+    geom_point(aes(group=seq_along(month)))+
+    scale_color_manual(values=c("#959a4b","#32586d","#b46232","#89acaa","#303d4d","#e0ce5e","#623a38","#ccd872"))+
+    transition_reveal2(month)+
+    ease_aes("linear") +
+    labs(title="Number of new users per month: {data$month_label[which.min(abs(data$month-frame_along))]}")+ 
+    labs(x="Month",y="")+
+    scale_y_continuous(breaks=seq(0,1200,300),limits=c(0,1200),labels=c("0","300","600","900","1 200"))+
+    scale_x_continuous(breaks=c(1:12),labels=c("jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"))+
+    theme(plot.title=element_text(size=12,family="Verdana"),
+          panel.background=element_blank(),
+          panel.border=element_blank(),
+          panel.grid.major=element_blank(),
+          panel.grid.minor=element_blank(),
+          legend.key.size=unit(0.4,"cm"),
+          legend.key=element_blank(),
+          legend.text=element_text(size=8,family="Verdana"),
+          legend.background=element_blank(),
+          legend.position="bottom",
+          axis.line=element_line(colour='black',linewidth=0.4),
+          axis.ticks.y=element_line(linewidth=0.2,colour="black"),
+          axis.ticks.x=element_line(linewidth=0.2,colour="black"),
+          axis.text.x=element_text(colour="black",size=9,family="Verdana"),
+          axis.title.x=element_text(colour="black",size=10,family="Verdana"),
+          axis.text.y=element_text(colour="black",size=9,family="Verdana"),
+          axis.title.y=element_text(colour="black",size=10,family="Verdana")))
+          
+(animation_use <- animate(p_use,nframes=50,fps=3,width=16,height=12,units="cm",res=300,renderer=gifski_renderer(loop=F),type="cairo",end_pause=20))
+anim_save("D:/xxxx/Antal_nya_användare.gif",animation_use)
